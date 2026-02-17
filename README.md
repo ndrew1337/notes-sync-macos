@@ -28,7 +28,21 @@ cd /Users/andrew/.codex/workspaces/default/notes_sync_app
 swift run
 ```
 
-## Launch as macOS app (.app)
+## Install like a typical macOS app (DMG)
+
+1. Download `NotesSyncApp-macOS.dmg` from [Releases](https://github.com/ndrew1337/notes-sync-macos/releases).
+2. Open the DMG.
+3. Drag `NotesSyncApp.app` to `Applications`.
+4. Launch from `Applications` or Spotlight.
+
+Build DMG locally:
+
+```bash
+cd /Users/andrew/.codex/workspaces/default/notes_sync_app
+./scripts/build_dmg.sh
+```
+
+## Developer launcher (auto-update on click)
 ```bash
 cd /Users/andrew/.codex/workspaces/default/notes_sync_app
 ./scripts/rebuild_and_install.sh
@@ -48,6 +62,17 @@ Manual one-command update + open:
 cd /Users/andrew/.codex/workspaces/default/notes_sync_app
 ./scripts/update_installed_app.sh
 ```
+
+## Build release artifacts
+
+```bash
+cd /Users/andrew/.codex/workspaces/default/notes_sync_app
+./scripts/build_release_artifacts.sh
+```
+
+This produces:
+- `dist/NotesSyncApp-macOS.dmg`
+- `dist/NotesSyncApp-macOS.zip`
 
 ## Data storage
 The app writes data to:
