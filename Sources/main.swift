@@ -2626,6 +2626,26 @@ struct ContentView: View {
     @State private var intervalText = "180"
     @State private var maxFileSizeText = "100"
     @State private var expandedFolderIDs: Set<String> = []
+    @State private var sourceSearchText = ""
+    @State private var sourceFilter: SourceFilter = .all
+
+    private enum SourceFilter: String, CaseIterable, Identifiable {
+        case all
+        case active
+        case errors
+        case folders
+
+        var id: String { rawValue }
+
+        var title: String {
+            switch self {
+            case .all: return "All"
+            case .active: return "Active"
+            case .errors: return "Errors"
+            case .folders: return "Folders"
+            }
+        }
+    }
 
     private static let dateFormatter: DateFormatter = {
         let formatter = DateFormatter()
@@ -2634,91 +2654,14 @@ struct ContentView: View {
     }()
 
     var body: some View {
-        VStack(spacing: 12) {
+        VStack(spacing: 10) {
             controls
 
-            Table(viewModel.noteDisplayRows, selection: $viewModel.selectedNoteID) {
-                TableColumn("Title") { row in
-                    Text(viewModel.noteDisplayTitle(row.note, depth: row.depth))
-                        .lineLimit(1)
-                }
-                .width(min: 180, ideal: 220)
-
-                TableColumn("Status") { row in
-                    Text(row.note.status)
-                        .lineLimit(1)
-                }
-                .width(min: 160, ideal: 240)
-
-                TableColumn("Last checked") { row in
-                    Text(Self.string(for: row.note.lastCheckedAt))
-                }
-                .width(min: 140, ideal: 150)
-
-                TableColumn("Last updated") { row in
-                    Text(Self.string(for: row.note.lastUpdatedAt))
-                }
-                .width(min: 140, ideal: 150)
-
-                TableColumn("Source URL") { row in
-                    Text(row.note.isGroup ? "-" : row.note.url)
-                        .lineLimit(1)
-                        .truncationMode(.middle)
-                }
-                .width(min: 280, ideal: 460)
-            }
-            .onChange(of: viewModel.selectedNoteID) { _ in
-                expandedFolderIDs = []
-                viewModel.selectedFolderFileID = nil
-                viewModel.selectDefaultFolderFileSelection()
-            }
-            .onChange(of: viewModel.selectedFolderFileID) { newValue in
-                expandAncestors(for: newValue)
-            }
-
-            if !viewModel.selectedSourceTree.isEmpty {
-                VStack(alignment: .leading, spacing: 6) {
-                    HStack {
-                        Text("Files in source")
-                            .font(.headline)
-                        Spacer()
-                        Picker(
-                            "Sort",
-                            selection: Binding(
-                                get: { viewModel.sourceFileSortMode },
-                                set: { viewModel.updateSourceFileSortMode($0) }
-                            )
-                        ) {
-                            ForEach(AppConfig.SourceFileSortMode.allCases) { mode in
-                                Text(mode.title).tag(mode)
-                            }
-                        }
-                        .pickerStyle(.segmented)
-                        .frame(width: 180)
-                    }
-                    HStack(spacing: 12) {
-                        Text("File")
-                            .frame(minWidth: 320, maxWidth: .infinity, alignment: .leading)
-                        Text("Size")
-                            .frame(width: 90, alignment: .trailing)
-                        Text("Modified")
-                            .frame(width: 130, alignment: .leading)
-                        Text("Type")
-                            .frame(minWidth: 140, alignment: .leading)
-                    }
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .padding(.horizontal, 8)
-
-                    ScrollView {
-                        LazyVStack(spacing: 0) {
-                            sourceTreeRows(nodes: viewModel.selectedSourceTree, depth: 0)
-                        }
-                    }
-                    .frame(minHeight: 140, maxHeight: 280)
-                    .background(Color(nsColor: .textBackgroundColor))
-                    .clipShape(RoundedRectangle(cornerRadius: 6))
-                }
+            HSplitView {
+                sourcesPanel
+                    .frame(minWidth: 420, idealWidth: 520, maxWidth: .infinity)
+                filesPanel
+                    .frame(minWidth: 460, maxWidth: .infinity)
             }
 
             HStack {
@@ -2733,8 +2676,8 @@ struct ContentView: View {
                 }
             }
         }
-        .padding(14)
-        .frame(minWidth: 980, minHeight: 620)
+        .padding(12)
+        .frame(minWidth: 1120, minHeight: 680)
         .onAppear {
             NSApp.activate(ignoringOtherApps: true)
             NSApp.windows.first?.makeKeyAndOrderFront(nil)
@@ -2803,101 +2746,323 @@ struct ContentView: View {
         }
     }
 
-    private var controls: some View {
-        HStack(spacing: 8) {
-            Button("Add") {
-                showAddSheet = true
+    private var filteredNoteRows: [NoteDisplayRow] {
+        let query = sourceSearchText.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
+        return viewModel.noteDisplayRows.filter { row in
+            let note = row.note
+            let lowerStatus = note.status.lowercased()
+
+            let matchesFilter: Bool
+            switch sourceFilter {
+            case .all:
+                matchesFilter = true
+            case .active:
+                matchesFilter = lowerStatus.contains("checking") || lowerStatus.contains("sync")
+            case .errors:
+                matchesFilter = note.lastError != nil || lowerStatus.contains("error") || lowerStatus.contains("failed")
+            case .folders:
+                matchesFilter = note.isGroup
             }
 
-            Button("Add folder") {
-                showAddFolderSheet = true
+            if !matchesFilter {
+                return false
             }
 
-            Button("Edit") {
+            guard !query.isEmpty else {
+                return true
+            }
+
+            return note.title.lowercased().contains(query)
+                || note.url.lowercased().contains(query)
+                || lowerStatus.contains(query)
+        }
+    }
+
+    private var sourcesPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack {
+                Text("Sources")
+                    .font(.headline)
+                Spacer()
+                Text("\(filteredNoteRows.count) shown")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+            }
+
+            HStack(spacing: 8) {
+                TextField("Search sources...", text: $sourceSearchText)
+                    .textFieldStyle(.roundedBorder)
+                Picker("Filter", selection: $sourceFilter) {
+                    ForEach(SourceFilter.allCases) { item in
+                        Text(item.title).tag(item)
+                    }
+                }
+                .pickerStyle(.segmented)
+                .frame(width: 320)
+            }
+
+            Table(filteredNoteRows, selection: $viewModel.selectedNoteID) {
+                TableColumn("Title") { row in
+                    HStack(spacing: 6) {
+                        Color.clear.frame(width: CGFloat(row.depth) * 12)
+                        Image(systemName: row.note.isGroup ? "folder.fill" : "link")
+                            .foregroundStyle(row.note.isGroup ? .blue : .secondary)
+                        Text(row.note.title)
+                            .lineLimit(1)
+                    }
+                }
+                .width(min: 220, ideal: 260)
+
+                TableColumn("Status") { row in
+                    statusBadge(for: row.note)
+                }
+                .width(min: 160, ideal: 230)
+
+                TableColumn("Last checked") { row in
+                    Text(Self.string(for: row.note.lastCheckedAt))
+                }
+                .width(min: 130, ideal: 140)
+
+                TableColumn("Last updated") { row in
+                    Text(Self.string(for: row.note.lastUpdatedAt))
+                }
+                .width(min: 130, ideal: 140)
+            }
+            .onChange(of: viewModel.selectedNoteID) { _ in
+                expandedFolderIDs = []
+                viewModel.selectedFolderFileID = nil
+                viewModel.selectDefaultFolderFileSelection()
+            }
+            .onChange(of: viewModel.selectedFolderFileID) { newValue in
+                expandAncestors(for: newValue)
+            }
+        }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private var filesPanel: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            HStack(spacing: 8) {
+                Text("Files")
+                    .font(.headline)
                 if let selected = viewModel.selectedNote {
-                    noteForEditing = selected
+                    Text(selected.title)
+                        .font(.subheadline)
+                        .foregroundStyle(.secondary)
+                        .lineLimit(1)
+                }
+                Spacer()
+                if !viewModel.selectedSourceTree.isEmpty {
+                    Picker(
+                        "Sort",
+                        selection: Binding(
+                            get: { viewModel.sourceFileSortMode },
+                            set: { viewModel.updateSourceFileSortMode($0) }
+                        )
+                    ) {
+                        ForEach(AppConfig.SourceFileSortMode.allCases) { mode in
+                            Text(mode.title).tag(mode)
+                        }
+                    }
+                    .pickerStyle(.segmented)
+                    .frame(width: 180)
                 }
             }
-            .disabled(viewModel.selectedNote == nil)
 
-            Button("Delete") {
-                viewModel.deleteSelectedNote()
+            if viewModel.selectedSourceTree.isEmpty {
+                Spacer()
+                VStack(spacing: 10) {
+                    Image(systemName: "doc.text.magnifyingglass")
+                        .font(.system(size: 28))
+                        .foregroundStyle(.secondary)
+                    Text("Select a folder source to browse files")
+                        .foregroundStyle(.secondary)
+                }
+                .frame(maxWidth: .infinity)
+                Spacer()
+            } else {
+                HStack(spacing: 12) {
+                    Text("File")
+                        .frame(maxWidth: .infinity, alignment: .leading)
+                    Text("Size")
+                        .frame(width: 78, alignment: .trailing)
+                    Text("Modified")
+                        .frame(width: 118, alignment: .leading)
+                    Text("Type")
+                        .frame(width: 72, alignment: .trailing)
+                }
+                .font(.caption.weight(.semibold))
+                .foregroundStyle(.secondary)
+                .padding(.horizontal, 8)
+                .frame(maxWidth: .infinity, alignment: .leading)
+
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: 0) {
+                        sourceTreeRows(nodes: viewModel.selectedSourceTree, depth: 0)
+                    }
+                }
+                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+                .background(Color(nsColor: .textBackgroundColor))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
             }
-            .disabled(viewModel.selectedNote == nil)
+        }
+        .padding(10)
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
 
-            Divider()
-                .frame(height: 20)
+    private var controls: some View {
+        VStack(spacing: 8) {
+            HStack(spacing: 8) {
+                Button("Add") {
+                    showAddSheet = true
+                }
 
-            Button("Update selected") {
-                viewModel.syncSelected()
+                Button("Add folder") {
+                    showAddFolderSheet = true
+                }
+
+                Button("Edit") {
+                    if let selected = viewModel.selectedNote {
+                        noteForEditing = selected
+                    }
+                }
+                .disabled(viewModel.selectedNote == nil)
+
+                Button("Delete") {
+                    viewModel.deleteSelectedNote()
+                }
+                .disabled(viewModel.selectedNote == nil)
+
+                Divider()
+                    .frame(height: 18)
+
+                Button("Update selected") {
+                    viewModel.syncSelected()
+                }
+                .disabled(viewModel.isSyncing || !viewModel.selectedHasSyncableSources)
+
+                Button("Update all") {
+                    viewModel.syncAll()
+                }
+                .disabled(viewModel.isSyncing || !viewModel.hasAnySyncableSource)
+
+                Button(viewModel.isStoppingSync ? "Stopping..." : "Stop") {
+                    viewModel.stopSync()
+                }
+                .disabled(!viewModel.isSyncing || viewModel.isStoppingSync)
+
+                Button("Open selected file") {
+                    viewModel.openSelectedLocalFile()
+                }
+                .disabled(!viewModel.canOpenCurrentSelection)
+                Spacer()
             }
-            .disabled(viewModel.isSyncing || !viewModel.selectedHasSyncableSources)
 
-            Button("Update all") {
-                viewModel.syncAll()
-            }
-            .disabled(viewModel.isSyncing || !viewModel.hasAnySyncableSource)
-
-            Button(viewModel.isStoppingSync ? "Stopping..." : "Stop") {
-                viewModel.stopSync()
-            }
-            .disabled(!viewModel.isSyncing || viewModel.isStoppingSync)
-
-            Button("Open selected file") {
-                viewModel.openSelectedLocalFile()
-            }
-            .disabled(!viewModel.canOpenCurrentSelection)
-
-            Spacer()
-
-            Toggle(
-                "Skip videos",
-                isOn: Binding(
-                    get: { viewModel.skipVideoFiles },
-                    set: { viewModel.updateSkipVideoFiles($0) }
+            HStack(spacing: 8) {
+                Toggle(
+                    "Skip videos",
+                    isOn: Binding(
+                        get: { viewModel.skipVideoFiles },
+                        set: { viewModel.updateSkipVideoFiles($0) }
+                    )
                 )
-            )
-            .toggleStyle(.switch)
-            .help("Do not download files with video MIME type or common video extensions.")
-            .disabled(viewModel.isSyncing)
-
-            Toggle(
-                "Skip >",
-                isOn: Binding(
-                    get: { viewModel.skipLargeFiles },
-                    set: { viewModel.updateSkipLargeFiles($0) }
-                )
-            )
-            .toggleStyle(.switch)
-            .help("Do not download files larger than the configured MB limit.")
-            .disabled(viewModel.isSyncing)
-
-            TextField("MB", text: $maxFileSizeText)
-                .frame(width: 64)
-                .multilineTextAlignment(.trailing)
+                .toggleStyle(.switch)
+                .help("Do not download files with video MIME type or common video extensions.")
                 .disabled(viewModel.isSyncing)
-            Text("MB")
-            Button("Set") {
-                if let value = Int(maxFileSizeText) {
-                    viewModel.updateMaxFileSizeMB(value)
-                } else {
-                    viewModel.alertMessage = "Max file size must be an integer (MB)"
-                }
-            }
-            .disabled(viewModel.isSyncing)
 
-            Text("Auto every")
-            TextField("minutes", text: $intervalText)
-                .frame(width: 60)
-            Text("min")
-            Button("Apply") {
-                if let value = Int(intervalText) {
-                    viewModel.updateCheckInterval(minutes: value)
-                } else {
-                    viewModel.alertMessage = "Interval must be an integer"
+                Toggle(
+                    "Skip >",
+                    isOn: Binding(
+                        get: { viewModel.skipLargeFiles },
+                        set: { viewModel.updateSkipLargeFiles($0) }
+                    )
+                )
+                .toggleStyle(.switch)
+                .help("Do not download files larger than the configured MB limit.")
+                .disabled(viewModel.isSyncing)
+
+                TextField("MB", text: $maxFileSizeText)
+                    .frame(width: 64)
+                    .multilineTextAlignment(.trailing)
+                    .textFieldStyle(.roundedBorder)
+                    .disabled(viewModel.isSyncing)
+                Text("MB")
+                Button("Set") {
+                    if let value = Int(maxFileSizeText) {
+                        viewModel.updateMaxFileSizeMB(value)
+                    } else {
+                        viewModel.alertMessage = "Max file size must be an integer (MB)"
+                    }
+                }
+                .disabled(viewModel.isSyncing)
+
+                Spacer()
+
+                Text("Auto every")
+                TextField("minutes", text: $intervalText)
+                    .frame(width: 60)
+                    .textFieldStyle(.roundedBorder)
+                Text("min")
+                Button("Apply") {
+                    if let value = Int(intervalText) {
+                        viewModel.updateCheckInterval(minutes: value)
+                    } else {
+                        viewModel.alertMessage = "Interval must be an integer"
+                    }
                 }
             }
         }
+        .padding(10)
+        .background(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .fill(Color(nsColor: .controlBackgroundColor))
+        )
+        .overlay(
+            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                .stroke(Color.primary.opacity(0.08), lineWidth: 1)
+        )
+    }
+
+    private func statusBadge(for note: NoteItem) -> some View {
+        let lower = note.status.lowercased()
+        let color: Color
+
+        if note.lastError != nil || lower.contains("error") || lower.contains("failed") {
+            color = .red
+        } else if lower.contains("checking") || lower.contains("sync") {
+            color = .orange
+        } else if lower == "no changes" || lower == "updated" || lower.contains("folder synced") {
+            color = .green
+        } else if note.isGroup {
+            color = .blue
+        } else {
+            color = .secondary
+        }
+
+        return Text(note.status)
+            .font(.caption)
+            .lineLimit(1)
+            .padding(.horizontal, 8)
+            .padding(.vertical, 3)
+            .background(color.opacity(0.18))
+            .foregroundStyle(color)
+            .clipShape(Capsule())
     }
 
     private func sourceTreeRows(nodes: [SourceTreeNode], depth: Int) -> AnyView {
@@ -2954,23 +3119,24 @@ struct ContentView: View {
                     .lineLimit(1)
                     .truncationMode(.middle)
             }
-            .frame(minWidth: 320, maxWidth: .infinity, alignment: .leading)
+            .frame(maxWidth: .infinity, alignment: .leading)
 
             Text(Self.sizeString(node.file?.sizeBytes))
-                .frame(width: 90, alignment: .trailing)
+                .frame(width: 78, alignment: .trailing)
                 .foregroundStyle(.secondary)
 
             Text(Self.string(for: node.file?.modifiedAt))
-                .frame(width: 130, alignment: .leading)
+                .frame(width: 118, alignment: .leading)
                 .foregroundStyle(.secondary)
 
-            Text(node.isFolder ? "folder" : (node.file?.mimeType ?? "-"))
+            Text(Self.fileTypeLabel(isFolder: node.isFolder, mimeType: node.file?.mimeType))
                 .lineLimit(1)
                 .foregroundStyle(.secondary)
-                .frame(minWidth: 140, alignment: .leading)
+                .frame(width: 72, alignment: .trailing)
         }
         .padding(.horizontal, 8)
         .padding(.vertical, 4)
+        .frame(maxWidth: .infinity, alignment: .leading)
         .background(isSelected ? Color.accentColor.opacity(0.20) : Color.clear)
         .contentShape(Rectangle())
         .highPriorityGesture(
@@ -3066,6 +3232,52 @@ struct ContentView: View {
         let formatter = ByteCountFormatter()
         formatter.countStyle = .file
         return formatter.string(fromByteCount: bytes)
+    }
+
+    private static func fileTypeLabel(isFolder: Bool, mimeType: String?) -> String {
+        if isFolder {
+            return "folder"
+        }
+
+        guard let raw = mimeType?.trimmingCharacters(in: .whitespacesAndNewlines),
+              !raw.isEmpty
+        else {
+            return "-"
+        }
+
+        let base = raw.split(separator: ";", maxSplits: 1, omittingEmptySubsequences: true).first.map(String.init) ?? raw
+        let lower = base.lowercased()
+        let subtypeRaw = lower.split(separator: "/", maxSplits: 1, omittingEmptySubsequences: true).last.map(String.init) ?? lower
+        var subtype = subtypeRaw
+        if subtype.hasPrefix("x-") {
+            subtype = String(subtype.dropFirst(2))
+        }
+
+        let mapped: [String: String] = [
+            "pdf": "PDF",
+            "zip": "ZIP",
+            "json": "JSON",
+            "mp4": "MP4",
+            "plain": "TXT",
+            "csv": "CSV",
+            "jpeg": "JPG",
+            "png": "PNG",
+            "gif": "GIF",
+            "msword": "DOC",
+            "vnd.openxmlformats-officedocument.wordprocessingml.document": "DOCX",
+            "vnd.ms-powerpoint": "PPT",
+            "vnd.openxmlformats-officedocument.presentationml.presentation": "PPTX",
+            "vnd.ms-excel": "XLS",
+            "vnd.openxmlformats-officedocument.spreadsheetml.sheet": "XLSX",
+        ]
+        if let label = mapped[subtype] {
+            return label
+        }
+
+        if subtype.count <= 5 {
+            return subtype.uppercased()
+        }
+        return subtype
     }
 }
 
